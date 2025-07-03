@@ -1,6 +1,6 @@
 import type { ModelDescriptionSchema } from '~/modules/llms/server/llm.server.types';
 import { wireOpenrouterModelsListOutputSchema } from '~/modules/llms/server/openai/openrouter.wiretypes';
-import { LLM_IF_OAI_Chat } from '~/common/stores/llms/llms.types';
+import { LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Reasoning, LLM_IF_OAI_Vision } from '~/common/stores/llms/llms.types';
 import { fromManualMapping } from '~/modules/llms/server/openai/models/models.data';
 
 
@@ -45,10 +45,14 @@ export function openRouterModelFamilySortFn(a: { id: string }, b: { id: string }
   return aPrefixIndex !== -1 ? -1 : 1;
 }
 
-export function openRouterModelToModelDescription(wireModel: object): ModelDescriptionSchema {
+export function openRouterModelToModelDescription(wireModel: object): ModelDescriptionSchema | null {
 
   // parse the model
-  const model = wireOpenrouterModelsListOutputSchema.parse(wireModel);
+  const { data: model, error } = wireOpenrouterModelsListOutputSchema.safeParse(wireModel);
+  if (error) {
+    console.warn(`openRouterModelToModelDescription: Failed to parse model data`, { error });
+    return null;
+  }
 
   // parse pricing
   const inputPrice = parseFloat(model.pricing.prompt);
@@ -87,3 +91,52 @@ export function openRouterModelToModelDescription(wireModel: object): ModelDescr
     hidden,
   });
 }
+
+export function openRouterInjectVariants(models: ModelDescriptionSchema[], model: ModelDescriptionSchema): ModelDescriptionSchema[] {
+  // keep the same list of models
+  models.push(model);
+
+  // inject thinking variants for Anthropic thinking models
+  const antThinkingModels = ['anthropic/claude-opus-4', 'anthropic/claude-sonnet-4', 'anthropic/claude-3-7-sonnet'];
+  if (antThinkingModels.includes(model.id)) {
+
+    // create a thinking variant for the model, by setting 'idVariant' and modifying the label/description
+    const thinkingVariant: ModelDescriptionSchema = {
+      ...model,
+      idVariant: 'thinking',
+      label: `${model.label} (thinking)`,
+      description: `(extended thinking mode) ${model.description}`,
+      interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Vision, LLM_IF_OAI_Fn, LLM_IF_OAI_Reasoning],
+      // this is what makes it a thinking variant
+      parameterSpecs: [
+        ...(model.parameterSpecs || []),
+        { paramId: 'llmVndAntThinkingBudget', initialValue: 1024 },
+      ],
+    };
+
+    models.push(thinkingVariant);
+  }
+
+  // no more variants to inject for now
+  return models;
+}
+
+/*
+export function openRouterStatTokenizers(openRouterModels: any[]): void {
+  // parse all
+  const tokenizersMap: Record<string, string[]> = {};
+  for (const model of openRouterModels) {
+    const { data, error } = wireOpenrouterModelsListOutputSchema.safeParse(model);
+    if (error) continue;
+    const tokenizer = data.architecture?.tokenizer || 'unknown';
+    if (!tokenizersMap[tokenizer])
+      tokenizersMap[tokenizer] = [];
+    tokenizersMap[tokenizer].push(data.id);
+  }
+  console.log('\n=== Tokenizer Statistics ===');
+  Object.entries(tokenizersMap)
+    .sort(([, modelsA], [, modelsB]) => modelsB.length - modelsA.length)
+    .forEach(([tokenizer, models]) => {
+      console.log(`${tokenizer}: ${models.length} models`);
+    });
+}*/
